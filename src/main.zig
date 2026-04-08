@@ -30,6 +30,7 @@ fn parseInputs(line: []const u8) ParserError!?Entry {
                 debug("set", .{});
                 const key = iter.next() orelse return ParserError.InvalidArguments;
                 const val = iter.next() orelse return ParserError.InvalidArguments;
+                if (iter.next() != null) return ParserError.InvalidArguments;
                 return .{
                     .key_len = @as(u32, @intCast(key.len)),
                     .value_len = @as(u32, @intCast(val.len)),
@@ -73,7 +74,11 @@ pub fn main() !void {
 
         const bare_line = try stdin.takeDelimiter('\n') orelse unreachable;
         const line = std.mem.trim(u8, bare_line, "\r");
-        if (try parseInputs(line)) |entry| {
+        const result = parseInputs(line) catch |err| {
+            debug("error: {any}\n", .{err});
+            continue;
+        };
+        if (result) |entry| {
             try database.seekFromEnd(0);
             inline for (std.meta.fields(Entry)) |field| {
                 const val = @field(entry, field.name);
