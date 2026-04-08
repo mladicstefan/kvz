@@ -16,30 +16,61 @@ const ParserError = error{
     NotFound,
 };
 
+const KvError = std.fs.File.WriteError || std.fs.File.SeekError || std.mem.Allocator.Error || ParserError;
+
 const Command = enum { GET, SET, DEL };
 
-fn parseInputs(line: []const u8) ParserError!?Entry {
+fn parseInputs(allocator: std.mem.Allocator, line: []const u8, map: *std.StringHashMap([]const u8), database: std.fs.File) KvError!?Entry {
     var iter = std.mem.tokenizeScalar(u8, line, ' ');
     while (iter.next()) |curr| {
         const cmd = std.meta.stringToEnum(Command, curr) orelse return ParserError.SyntaxError;
         switch (cmd) {
             .GET => {
-                debug("get", .{});
+                const key = iter.next() orelse return ParserError.InvalidArguments;
+                const entry = map.get(key);
+                if (entry) |e| {
+                    debug("{s}: {s}\n", .{ key, e });
+                }
             },
             .SET => {
-                debug("set", .{});
-                const key = iter.next() orelse return ParserError.InvalidArguments;
-                const val = iter.next() orelse return ParserError.InvalidArguments;
+                const key = try allocator.dupe(u8, iter.next() orelse return ParserError.InvalidArguments);
+                const val = try allocator.dupe(u8, iter.next() orelse return ParserError.InvalidArguments);
                 if (iter.next() != null) return ParserError.InvalidArguments;
-                return .{
+                const entry: Entry = .{
                     .key_len = @as(u32, @intCast(key.len)),
                     .value_len = @as(u32, @intCast(val.len)),
                     .key = key,
                     .value = val,
                 };
+
+                const res = try map.getOrPut(entry.key);
+
+                if (res.found_existing) {
+                    allocator.free(entry.key);
+                    allocator.free(res.value_ptr.*);
+                }
+                res.value_ptr.* = entry.value;
+
+                try database.seekFromEnd(0);
+                inline for (std.meta.fields(Entry)) |field| {
+                    const value = @field(entry, field.name);
+                    if (field.type == []const u8) {
+                        try database.writeAll(value);
+                    } else {
+                        try database.writeAll(std.mem.asBytes(&value));
+                    }
+                }
+                return entry;
             },
             .DEL => {
-                debug("del", .{});
+                const key = iter.next() orelse return ParserError.InvalidArguments;
+                if (map.fetchRemove(key)) |removed| {
+                    allocator.free(removed.key);
+                    allocator.free(removed.value);
+                    debug("DEL {s}\n", .{key});
+                } else {
+                    debug("NOT FOUND\n", .{});
+                }
             },
         }
     }
@@ -51,16 +82,18 @@ pub fn main() !void {
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
+    //TODO: Map header
     var map: std.StringHashMap([]const u8) = .init(allocator);
     defer map.deinit();
-
-    var stdout_buf: [1024]u8 = undefined;
-    var stdout_writer = std.fs.File.stdout().writer(&stdout_buf);
-    const stdout: *std.io.Writer = &stdout_writer.interface;
+    //
+    // var stdout_buf: [1024]u8 = undefined;
+    // var stdout_writer = std.fs.File.stdout().writer(&stdout_buf);
+    // const stdout: *std.io.Writer = &stdout_writer.interface;
 
     var read_buff: [1024]u8 = undefined;
     var reader = std.fs.File.stdin().reader(&read_buff);
     const stdin: *std.io.Reader = &reader.interface;
+
     var data_dir = try std.fs.openDirAbsolute(data_dir_path, .{});
     defer data_dir.close();
 
@@ -68,26 +101,16 @@ pub fn main() !void {
     defer database.close();
 
     while (true) {
-        _ = try stdout.print("\nEnter a command: \n", .{});
-        //actually a potential bottleneck here
-        try stdout.flush();
-
         const bare_line = try stdin.takeDelimiter('\n') orelse unreachable;
         const line = std.mem.trim(u8, bare_line, "\r");
-        const result = parseInputs(line) catch |err| {
+        _ = parseInputs(allocator, line, &map, database) catch |err| {
             debug("error: {any}\n", .{err});
             continue;
         };
-        if (result) |entry| {
-            try database.seekFromEnd(0);
-            inline for (std.meta.fields(Entry)) |field| {
-                const val = @field(entry, field.name);
-                if (field.type == []const u8) {
-                    try database.writeAll(val);
-                } else {
-                    try database.writeAll(std.mem.asBytes(&val));
-                }
-            }
+
+        var it = map.iterator();
+        while (it.next()) |entry| {
+            debug("{s}: {s}\n", .{ entry.key_ptr.*, entry.value_ptr.* });
         }
     }
 }
