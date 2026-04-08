@@ -1,5 +1,8 @@
 const std = @import("std");
 const debug = std.debug.print;
+const net = std.net;
+const posix = std.posix;
+const log = std.log;
 
 const DATA_PATH = "/home/djamla/code/git/kvz/data/";
 const HEADER_OFFSET = 4;
@@ -17,11 +20,11 @@ const ParserError = error{
     NotFound,
 };
 
-const KvError = std.fs.File.WriteError || std.fs.File.SeekError || std.mem.Allocator.Error || ParserError || std.fs.File.ReadError;
+const KvError = std.fs.File.WriteError || std.fs.File.SeekError || std.mem.Allocator.Error || ParserError || std.fs.File.ReadError || std.io.Writer.Error;
 
 const Command = enum { GET, SET, DEL, LS };
 
-fn parseInputs(allocator: std.mem.Allocator, line: []const u8, map: *std.StringHashMap([]const u8), database: std.fs.File) KvError!?Entry {
+fn parseInputs(allocator: std.mem.Allocator, line: []const u8, map: *std.StringHashMap([]const u8), database: std.fs.File, writer: *std.io.Writer) KvError!?Entry {
     var iter = std.mem.tokenizeScalar(u8, line, ' ');
     while (iter.next()) |curr| {
         const cmd = std.meta.stringToEnum(Command, curr) orelse return ParserError.SyntaxError;
@@ -30,7 +33,9 @@ fn parseInputs(allocator: std.mem.Allocator, line: []const u8, map: *std.StringH
                 const key = iter.next() orelse return ParserError.InvalidArguments;
                 const entry = map.get(key);
                 if (entry) |e| {
-                    debug("{s}: {s}\n", .{ key, e });
+                    try writer.print("{s}: {s}\n", .{ key, e });
+                } else {
+                    try writer.print("NOT FOUND\n", .{});
                 }
             },
             .SET => {
@@ -43,9 +48,7 @@ fn parseInputs(allocator: std.mem.Allocator, line: []const u8, map: *std.StringH
                     .key = key,
                     .value = val,
                 };
-
                 const res = try map.getOrPut(entry.key);
-
                 if (res.found_existing) {
                     allocator.free(entry.key);
                     allocator.free(res.value_ptr.*);
@@ -70,7 +73,7 @@ fn parseInputs(allocator: std.mem.Allocator, line: []const u8, map: *std.StringH
                         }
                     }
                 }
-
+                try writer.print("OK\n", .{});
                 return entry;
             },
             .DEL => {
@@ -78,15 +81,15 @@ fn parseInputs(allocator: std.mem.Allocator, line: []const u8, map: *std.StringH
                 if (map.fetchRemove(key)) |removed| {
                     allocator.free(removed.key);
                     allocator.free(removed.value);
-                    debug("DEL {s}\n", .{key});
+                    try writer.print("DEL {s}\n", .{key});
                 } else {
-                    debug("NOT FOUND\n", .{});
+                    try writer.print("NOT FOUND\n", .{});
                 }
             },
             .LS => {
                 var it = map.iterator();
                 while (it.next()) |entry| {
-                    debug("{s}: {s}\n", .{ entry.key_ptr.*, entry.value_ptr.* });
+                    try writer.print("{s}: {s}\n", .{ entry.key_ptr.*, entry.value_ptr.* });
                 }
             },
         }
@@ -125,17 +128,18 @@ pub fn main() !void {
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    //TODO: Map header
     var map: std.StringHashMap([]const u8) = .init(allocator);
     defer map.deinit();
-    //
-    // var stdout_buf: [1024]u8 = undefined;
-    // var stdout_writer = std.fs.File.stdout().writer(&stdout_buf);
-    // const stdout: *std.io.Writer = &stdout_writer.interface;
 
-    var read_buff: [1024]u8 = undefined;
-    var reader = std.fs.File.stdin().reader(&read_buff);
-    const stdin: *std.io.Reader = &reader.interface;
+    const PORT = 25556;
+    const address = net.Address.initIp4(.{ 127, 0, 0, 1 }, PORT);
+    const server = try posix.socket(posix.AF.INET, posix.SOCK.STREAM, 0);
+    defer posix.close(server);
+
+    try posix.setsockopt(server, posix.SOL.SOCKET, posix.SO.REUSEADDR, &std.mem.toBytes(@as(c_int, 1)));
+    try posix.bind(server, &address.any, address.getOsSockLen());
+    try posix.listen(server, 128);
+    debug("Listening on port:{d}...\n", .{PORT});
 
     var data_dir = try std.fs.openDirAbsolute(DATA_PATH, .{});
     defer data_dir.close();
@@ -162,11 +166,32 @@ pub fn main() !void {
     debug("Done, use responsibly (if possible)\n", .{});
 
     while (true) {
-        const bare_line = try stdin.takeDelimiter('\n') orelse unreachable;
-        const line = std.mem.trim(u8, bare_line, "\r");
-        _ = parseInputs(allocator, line, &map, database) catch |err| {
-            debug("error: {any}\n", .{err});
-            continue;
-        };
+        var client_addr: net.Address = undefined;
+        var addr_len: posix.socklen_t = @sizeOf(net.Address);
+
+        const client = try posix.accept(server, &client_addr.any, &addr_len, 0);
+        defer posix.close(client);
+        log.info("accepted connection from {}", .{client_addr.in.sa.addr});
+
+        const stream: net.Stream = .{ .handle = client };
+        var write_buf: [4096]u8 = undefined;
+        var writer = stream.writer(&write_buf);
+        while (true) {
+            var buf: [1024]u8 = undefined;
+            const n = posix.read(client, &buf) catch break;
+            if (n == 0) break; // client disconnected
+            log.info("received {d} bytes: {s}", .{ n, buf[0..n] });
+
+            const line = std.mem.trim(u8, buf[0..n], "\r\n");
+            _ = parseInputs(allocator, line, &map, database, &writer.interface) catch |err| {
+                log.err("error: {any}", .{err});
+                var err_buf: [128]u8 = undefined;
+                const msg = std.fmt.bufPrint(&err_buf, "ERR: {s}\n", .{@errorName(err)}) catch "ERR: unknown\n";
+                writer.interface.writeAll(msg) catch break;
+                writer.interface.flush() catch break;
+                continue;
+            };
+            writer.interface.flush() catch break;
+        }
     }
 }
