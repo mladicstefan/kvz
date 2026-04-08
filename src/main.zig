@@ -141,7 +141,14 @@ pub fn main() !void {
     try posix.listen(server, 128);
     debug("Listening on port:{d}...\n", .{PORT});
 
-    var data_dir = try std.fs.openDirAbsolute(DATA_PATH, .{});
+    var data_dir = std.fs.openDirAbsolute(DATA_PATH, .{}) catch |err| switch (err) {
+        error.FileNotFound => blk: {
+            try std.fs.makeDirAbsolute(DATA_PATH);
+            break :blk try std.fs.openDirAbsolute(DATA_PATH, .{});
+        },
+        else => return err,
+    };
+
     defer data_dir.close();
 
     const database = data_dir.openFile("data.bin", .{ .mode = .read_write }) catch |err| switch (err) {
