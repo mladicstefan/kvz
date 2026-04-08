@@ -18,7 +18,7 @@ const ParserError = error{
 
 const KvError = std.fs.File.WriteError || std.fs.File.SeekError || std.mem.Allocator.Error || ParserError;
 
-const Command = enum { GET, SET, DEL };
+const Command = enum { GET, SET, DEL, LS };
 
 fn parseInputs(allocator: std.mem.Allocator, line: []const u8, map: *std.StringHashMap([]const u8), database: std.fs.File) KvError!?Entry {
     var iter = std.mem.tokenizeScalar(u8, line, ' ');
@@ -72,6 +72,12 @@ fn parseInputs(allocator: std.mem.Allocator, line: []const u8, map: *std.StringH
                     debug("NOT FOUND\n", .{});
                 }
             },
+            .LS => {
+                var it = map.iterator();
+                while (it.next()) |entry| {
+                    debug("{s}: {s}\n", .{ entry.key_ptr.*, entry.value_ptr.* });
+                }
+            },
         }
     }
     return null;
@@ -107,10 +113,5 @@ pub fn main() !void {
             debug("error: {any}\n", .{err});
             continue;
         };
-
-        var it = map.iterator();
-        while (it.next()) |entry| {
-            debug("{s}: {s}\n", .{ entry.key_ptr.*, entry.value_ptr.* });
-        }
     }
 }
