@@ -5,7 +5,7 @@ const expectError = std.testing.expectError;
 const Store = @import("Store.zig");
 
 const Dispatcher = @This();
-const HandlerFn = *const fn (tokens: [][]const u8, store: *Store) void;
+const HandlerFn = *const fn (tokens: [][]const u8, store: Store) void;
 
 cmd_table: [16]u8,
 handlers: [4]HandlerFn,
@@ -64,7 +64,7 @@ fn simdEqlCMDIgnoreCaseVec(a: []const u8, comptime b: @Vector(MAX_CMD_LEN, u8), 
     return @reduce(.And, (vec | comptime_mask) == b_lowered);
 }
 
-pub fn dispatch(tokens: [][]const u8, store: *Store) DispatchError!void {
+pub fn dispatch(tokens: [][]const u8, store: Store) DispatchError!void {
     const cmds = comptime .{
         .{ GET_VEC, 3, 0b0001 },
         .{ SET_VEC, 3, 0b0010 },
@@ -84,26 +84,20 @@ pub fn dispatch(tokens: [][]const u8, store: *Store) DispatchError!void {
     HANDLERS[index](tokens, store);
 }
 
-fn getHandler(tokens: [][]const u8, store: *Store) void {
+fn getHandler(tokens: [][]const u8, store: Store) void {
     const val = store.get(tokens[1]);
-    _ = val; // TODO: write val to response buffer
+    _ = val;
 }
-
-fn setHandler(tokens: [][]const u8, store: *Store) void {
+fn setHandler(tokens: [][]const u8, store: Store) void {
     store.set(tokens[1], tokens[2]);
-    // TODO: write OK to response buffer
 }
-
-fn delHandler(tokens: [][]const u8, store: *Store) void {
+fn delHandler(tokens: [][]const u8, store: Store) void {
     store.del(tokens[1]);
-    // TODO: write OK to response buffer
 }
-
-fn lsHandler(tokens: [][]const u8, store: *Store) void {
+fn lsHandler(tokens: [][]const u8, store: Store) void {
     _ = tokens;
     store.ls();
 }
-
 // =================================
 // tests below with mock functions, safe to ignore, will be deleted
 // =================================
@@ -128,73 +122,76 @@ fn mockDel(ptr: *anyopaque, key: []const u8) void {
 fn mockLs(ptr: *anyopaque) void {
     _ = ptr;
 }
+const mock_vtable: Store.VTable = .{
+    .getFn = &mockGet,
+    .setFn = &mockSet,
+    .lsFn = &mockLs,
+    .delFn = &mockDel,
+};
 
 pub fn mockStore() Store {
     return .{
         .ptr = undefined, // ptr is fine as undefined since mock fns ignore it
-        .getFn = mockGet,
-        .setFn = mockSet,
-        .delFn = mockDel,
-        .lsFn = mockLs,
+        .vtable = &mock_vtable,
     };
 }
 
 test "dispatch GET lowercase" {
-    var mock_store: Store = mockStore();
+    const mock_store: Store = mockStore();
     var tokens = [_][]const u8{ "get", "somekey" };
-    try dispatch(&tokens, &mock_store);
+    try dispatch(&tokens, mock_store);
 }
 
 test "dispatch GET uppercase" {
-    var mock_store: Store = mockStore();
+    const mock_store: Store = mockStore();
     var tokens = [_][]const u8{ "GET", "somekey" };
-    try dispatch(&tokens, &mock_store);
+    try dispatch(&tokens, mock_store);
 }
 
 test "dispatch GET mixed case" {
-    var mock_store: Store = mockStore();
+    const mock_store: Store = mockStore();
     var tokens = [_][]const u8{ "Get", "somekey" };
-    try dispatch(&tokens, &mock_store);
+    try dispatch(&tokens, mock_store);
 }
 
 test "dispatch SET" {
-    var mock_store: Store = mockStore();
+    const mock_store: Store = mockStore();
     var tokens = [_][]const u8{ "SET", "somekey", "someval" };
-    try dispatch(&tokens, &mock_store);
+    try dispatch(&tokens, mock_store);
 }
 
 test "dispatch DEL" {
-    var mock_store: Store = mockStore();
+    const mock_store: Store = mockStore();
     var tokens = [_][]const u8{ "DEL", "somekey" };
-    try dispatch(&tokens, &mock_store);
+    try dispatch(&tokens, mock_store);
 }
 
 test "dispatch LS" {
-    var mock_store: Store = mockStore();
+    const mock_store: Store = mockStore();
     var tokens = [_][]const u8{"LS"};
-    try dispatch(&tokens, &mock_store);
+    try dispatch(&tokens, mock_store);
 }
 
 test "dispatch LS lowercase" {
-    var mock_store: Store = mockStore();
+    const mock_store: Store = mockStore();
     var tokens = [_][]const u8{"ls"};
-    try dispatch(&tokens, &mock_store);
+    try dispatch(&tokens, mock_store);
 }
 
 test "dispatch unknown command returns error" {
-    var mock_store: Store = mockStore();
+    const mock_store: Store = mockStore();
     var tokens = [_][]const u8{"FOO"};
-    try expectError(DispatchError.UnknownCommand, dispatch(&tokens, &mock_store));
+    try expectError(DispatchError.UnknownCommand, dispatch(&tokens, mock_store));
 }
 
 test "dispatch empty string returns error" {
-    var mock_store: Store = mockStore();
+    const mock_store: Store = mockStore();
     var tokens = [_][]const u8{""};
-    try expectError(DispatchError.UnknownCommand, dispatch(&tokens, &mock_store));
+    try expectError(DispatchError.UnknownCommand, dispatch(&tokens, mock_store));
 }
 
 test "dispatch too long returns error" {
-    var mock_store: Store = mockStore();
+    const mock_store: Store = mockStore();
     var tokens = [_][]const u8{"SETX"};
-    try expectError(DispatchError.UnknownCommand, dispatch(&tokens, &mock_store));
+    try expectError(DispatchError.UnknownCommand, dispatch(&tokens, mock_store));
 }
