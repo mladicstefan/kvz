@@ -7,6 +7,7 @@ const expect = std.testing.expect;
 
 const Dispatcher = @import("Dispatcher.zig");
 const Parser = @import("Parser.zig");
+const SwissTable = @import("SwissTable.zig");
 
 pub fn main() !void {
     const PORT = 25556;
@@ -25,7 +26,7 @@ pub fn main() !void {
     // defer arena.deinit();
 
     var gpa: std.heap.DebugAllocator(.{}) = .init;
-    _ = gpa.allocator();
+    const allocator = gpa.allocator();
     defer {
         const deinit_status = gpa.deinit();
         if (deinit_status == .leak) expect(false) catch @panic("Memory Leak");
@@ -37,7 +38,10 @@ pub fn main() !void {
     const query: []const u8 = "SET foo bar";
     parser.parse(query);
 
-    var Store = Dispatcher.mockStore();
+    const Store = Dispatcher.mockStore();
     // dispatch
-    try Dispatcher.dispatch(parser.tokens[0..parser.token_count], &Store);
+    try Dispatcher.dispatch(parser.tokens[0..parser.token_count], Store);
+    var st: SwissTable = try SwissTable.init(@as(u6, 4), allocator);
+    debug(".{any}", .{st});
+    defer st.deinit();
 }
