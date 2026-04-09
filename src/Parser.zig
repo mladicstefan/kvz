@@ -21,7 +21,7 @@ pub fn init() @This() {
 
 fn simdEqlIgnoreCase(a: []const u8, b: []const u8) bool {
     if (a.len != b.len) return false;
-    if (a.len > MAX_CMD_LEN or b.len > MAX_CMD_LEN) return false;
+    if (a.len > MAX_LEN or b.len > MAX_LEN) return false;
     // maybe someday....
     // const isEqlLen = @intFromBool(a.len == b.len);
     // const isSafe = @intFromBool(a.len < MAX_CMD_LEN and b.len < MAX_LEN);
@@ -29,16 +29,16 @@ fn simdEqlIgnoreCase(a: []const u8, b: []const u8) bool {
 
     const len = a.len;
 
-    var buf1: [MAX_CMD_LEN]u8 = [_]u8{0} ** MAX_LEN;
-    var buf2: [MAX_CMD_LEN]u8 = [_]u8{0} ** MAX_LEN;
+    var buf1: [MAX_LEN]u8 = [_]u8{0} ** MAX_LEN;
+    var buf2: [MAX_LEN]u8 = [_]u8{0} ** MAX_LEN;
 
     @memcpy(buf1[0..len], a[0..len]);
     @memcpy(buf2[0..len], b[0..len]);
 
-    const v1: @Vector(MAX_CMD_LEN, u8) = buf1;
-    const v2: @Vector(MAX_CMD_LEN, u8) = buf2;
+    const v1: @Vector(MAX_LEN, u8) = buf1;
+    const v2: @Vector(MAX_LEN, u8) = buf2;
 
-    const mask: @Vector(MAX_CMD_LEN, u8) = @splat(0x20);
+    const mask: @Vector(MAX_LEN, u8) = @splat(0x20);
     // mask to make it case insensitive
     // Example 1:
     // A (0x41)  01000001
@@ -66,17 +66,17 @@ fn simdGetBitMask(query: []const u8, delimiter: u8) u32 {
     return @bitCast(matches);
 }
 
-fn simdTokenize(self: *@This(), query: []const u8, delimiter: u8) void {
+fn simdTokenize(self: *@This(), delimiter: u8) void {
     var prev: usize = 0;
-    const len_mask: u32 = (@as(u32, 1) << @intCast(query.len));
+    const len_mask: u32 = (@as(u32, 1) << @intCast(self.query.len));
     //const len_mask: u32 = (1 << x.len);
     // const len_mask = simdGetBitMask(x, '\r');
-    var mask = simdGetBitMask(query, delimiter);
+    var mask = simdGetBitMask(self.query, delimiter);
     mask ^= len_mask;
     const count = @popCount(mask);
     for (0..count) |i| {
         const pos = @ctz(mask);
-        self.tokens[i] = query[prev..pos];
+        self.tokens[i] = self.query[prev..pos];
         self.token_count += 1;
         mask &= mask - 1;
         prev = pos + 1;
@@ -85,7 +85,7 @@ fn simdTokenize(self: *@This(), query: []const u8, delimiter: u8) void {
 
 pub fn parse(self: *@This(), query: []const u8) void {
     self.query = query;
-    self.simdTokenize(query, ' ');
+    self.simdTokenize(' ');
 }
 
 test "parse" {
@@ -106,7 +106,8 @@ test "simdTokenize" {
 
     // const tokens: [MAX_CMD_LEN][]const u8 = undefined;
     var p: Parser = init();
-    p.simdTokenize(query, std.ascii.whitespace[0]);
+    p.query = query;
+    p.simdTokenize(std.ascii.whitespace[0]);
 
     try std.testing.expectEqualStrings("A", p.tokens[0]);
     try std.testing.expectEqualStrings("bat", p.tokens[1]);
