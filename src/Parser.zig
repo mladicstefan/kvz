@@ -9,8 +9,15 @@ const ParserError = error{
 
 const MAX_LEN = 32;
 const MAX_CMD_LEN = 5;
-const ITERATIONS = 1_000_000;
-const Parser = @This();
+
+pub const Parser = @This();
+query: []const u8,
+tokens: [MAX_CMD_LEN][]const u8,
+token_count: u8,
+
+pub fn init() @This() {
+    return .{ .query = undefined, .tokens = undefined, .token_count = 0 };
+}
 
 fn simdEqlIgnoreCase(a: []const u8, b: []const u8) bool {
     if (a.len != b.len) return false;
@@ -47,48 +54,65 @@ fn simdEqlIgnoreCase(a: []const u8, b: []const u8) bool {
     return @reduce(.And, (v1 | mask) == (v2 | mask));
 }
 
-fn simdGetBitMask(input: []const u8, delimiter: u8) u32 {
-    const len = input.len;
+fn simdGetBitMask(query: []const u8, delimiter: u8) u32 {
+    const len = query.len;
     var buf: [MAX_LEN]u8 = [_]u8{0} ** MAX_LEN;
-    @memcpy(buf[0..len], input[0..len]);
+    @memcpy(buf[0..len], query[0..len]);
 
-    const input_vec: @Vector(MAX_LEN, u8) = buf;
+    const query_vec: @Vector(MAX_LEN, u8) = buf;
     const delim_vec: @Vector(MAX_LEN, u8) = @splat(delimiter);
 
-    const matches: @Vector(MAX_LEN, bool) = input_vec == delim_vec;
+    const matches: @Vector(MAX_LEN, bool) = query_vec == delim_vec;
     return @bitCast(matches);
+}
+
+fn simdTokenize(self: *@This(), query: []const u8, delimiter: u8) void {
+    var prev: usize = 0;
+    const len_mask: u32 = (@as(u32, 1) << @intCast(query.len));
+    //const len_mask: u32 = (1 << x.len);
+    // const len_mask = simdGetBitMask(x, '\r');
+    var mask = simdGetBitMask(query, delimiter);
+    mask ^= len_mask;
+    const count = @popCount(mask);
+    for (0..count) |i| {
+        const pos = @ctz(mask);
+        self.tokens[i] = query[prev..pos];
+        self.token_count += 1;
+        mask &= mask - 1;
+        prev = pos + 1;
+    }
+}
+
+pub fn parse(self: *@This(), query: []const u8) void {
+    self.query = query;
+    self.simdTokenize(query, ' ');
+}
+
+test "parse" {
+    // const tokens: [MAX_CMD_LEN][]const u8 = undefined;
+    var p: Parser = init();
+    const query: []const u8 = "A bat drew a cat";
+    p.parse(query);
+    debug("{any}\n", .{p});
+    try std.testing.expectEqualStrings("A", p.tokens[0]);
+    try std.testing.expectEqualStrings("bat", p.tokens[1]);
+    try std.testing.expectEqualStrings("drew", p.tokens[2]);
+    try std.testing.expectEqualStrings("a", p.tokens[3]);
+    try std.testing.expectEqualStrings("cat", p.tokens[4]);
 }
 
 test "simdTokenize" {
     const x: []const u8 = "A bat drew a cat";
 
-    var tokens: [MAX_CMD_LEN][]const u8 = undefined;
-    var prev: usize = 0;
-    const len_mask: u32 = (@as(u32, 1) << @intCast(x.len));
-    //const len_mask: u32 = (1 << x.len);
-    // debug("{b:0>32}\n", .{len_mask});
-    // const len_mask = simdGetBitMask(x, '\r');
-    var mask = simdGetBitMask(x, std.ascii.whitespace[0]);
-    mask ^= len_mask;
-    // debug("{b:0>32}\n", .{mask});
-    const count = @popCount(mask);
-    // debug("{d}\n", .{count});
-    // debug("{b:0>32}\n", .{mask});
-    for (0..count) |i| {
-        // debug("Iter:{d}\n", .{i});
-        const pos = @ctz(mask);
-        tokens[i] = x[prev..pos];
-        // debug("{s}\n", .{tokens[i]});
-        mask &= mask - 1;
-        // debug("{b:0>32}\n", .{mask});
-        prev = pos + 1;
-    }
+    // const tokens: [MAX_CMD_LEN][]const u8 = undefined;
+    var p: Parser = init();
+    p.simdTokenize(x, std.ascii.whitespace[0]);
 
-    try std.testing.expectEqualStrings("A", tokens[0]);
-    try std.testing.expectEqualStrings("bat", tokens[1]);
-    try std.testing.expectEqualStrings("drew", tokens[2]);
-    try std.testing.expectEqualStrings("a", tokens[3]);
-    try std.testing.expectEqualStrings("cat", tokens[4]);
+    try std.testing.expectEqualStrings("A", p.tokens[0]);
+    try std.testing.expectEqualStrings("bat", p.tokens[1]);
+    try std.testing.expectEqualStrings("drew", p.tokens[2]);
+    try std.testing.expectEqualStrings("a", p.tokens[3]);
+    try std.testing.expectEqualStrings("cat", p.tokens[4]);
 }
 
 test "simdEqlIgnoreCase" {
@@ -118,6 +142,7 @@ test "simdEqlIgnoreCase" {
 //
 // test "Benchmark random strings, branch-heavy" {
 //     var prng = std.Random.Xoshiro256.init(0xDEADBEEF);
+//     const ITERATIONS = 1_000_000;
 //
 //     // Pre-generate string pairs so generation cost isn't in the benchmark
 //     const PREGEN = 1024;
