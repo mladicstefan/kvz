@@ -21,24 +21,24 @@ pub fn init() @This() {
 
 fn simdEqlIgnoreCase(a: []const u8, b: []const u8) bool {
     if (a.len != b.len) return false;
-    if (a.len > MAX_LEN or b.len > MAX_LEN) return false;
+    if (a.len > MAX_CMD_LEN or b.len > MAX_CMD_LEN) return false;
     // maybe someday....
     // const isEqlLen = @intFromBool(a.len == b.len);
-    // const isSafe = @intFromBool(a.len < MAX_LEN and b.len < MAX_LEN);
+    // const isSafe = @intFromBool(a.len < MAX_CMD_LEN and b.len < MAX_LEN);
     // const valid = isEqlLen & isSafe;
 
     const len = a.len;
 
-    var buf1: [MAX_LEN]u8 = [_]u8{0} ** MAX_LEN;
-    var buf2: [MAX_LEN]u8 = [_]u8{0} ** MAX_LEN;
+    var buf1: [MAX_CMD_LEN]u8 = [_]u8{0} ** MAX_LEN;
+    var buf2: [MAX_CMD_LEN]u8 = [_]u8{0} ** MAX_LEN;
 
     @memcpy(buf1[0..len], a[0..len]);
     @memcpy(buf2[0..len], b[0..len]);
 
-    const v1: @Vector(MAX_LEN, u8) = buf1;
-    const v2: @Vector(MAX_LEN, u8) = buf2;
+    const v1: @Vector(MAX_CMD_LEN, u8) = buf1;
+    const v2: @Vector(MAX_CMD_LEN, u8) = buf2;
 
-    const mask: @Vector(MAX_LEN, u8) = @splat(0x20);
+    const mask: @Vector(MAX_CMD_LEN, u8) = @splat(0x20);
     // mask to make it case insensitive
     // Example 1:
     // A (0x41)  01000001
@@ -102,11 +102,11 @@ test "parse" {
 }
 
 test "simdTokenize" {
-    const x: []const u8 = "A bat drew a cat";
+    const query: []const u8 = "A bat drew a cat";
 
     // const tokens: [MAX_CMD_LEN][]const u8 = undefined;
     var p: Parser = init();
-    p.simdTokenize(x, std.ascii.whitespace[0]);
+    p.simdTokenize(query, std.ascii.whitespace[0]);
 
     try std.testing.expectEqualStrings("A", p.tokens[0]);
     try std.testing.expectEqualStrings("bat", p.tokens[1]);
