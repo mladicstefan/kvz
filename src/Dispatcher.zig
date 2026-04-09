@@ -129,7 +129,7 @@ fn mockLs(ptr: *anyopaque) void {
     _ = ptr;
 }
 
-fn mockStore() Store {
+pub fn mockStore() Store {
     return .{
         .ptr = undefined, // ptr is fine as undefined since mock fns ignore it
         .getFn = mockGet,

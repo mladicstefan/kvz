@@ -2,12 +2,16 @@ const std = @import("std");
 const debug = std.debug.print;
 const net = std.net;
 const posix = std.posix;
-const log = std.log;
+const log = std.log.debug;
 const expect = std.testing.expect;
+
+const Dispatcher = @import("Dispatcher.zig");
+const Parser = @import("Parser.zig");
 
 pub fn main() !void {
     const PORT = 25556;
     const address = net.Address.initIp4(.{ 127, 0, 0, 1 }, PORT);
+
     const server = try posix.socket(posix.AF.INET, posix.SOCK.STREAM, 0);
     defer posix.close(server);
 
@@ -26,4 +30,14 @@ pub fn main() !void {
         const deinit_status = gpa.deinit();
         if (deinit_status == .leak) expect(false) catch @panic("Memory Leak");
     }
+
+    var parser = Parser.init();
+
+    //mock query
+    const query: []const u8 = "SET foo bar";
+    parser.parse(query);
+
+    var Store = Dispatcher.mockStore();
+    // dispatch
+    try Dispatcher.dispatch(parser.tokens[0..parser.token_count], &Store);
 }
