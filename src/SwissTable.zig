@@ -4,8 +4,9 @@
 const std = @import("std");
 const debug = std.debug.print;
 const expect = std.testing.expect;
-const SimdEql = @import("SIMDStrings.zig");
+const SimdStrings = @import("SIMDStrings.zig");
 
+const MAX_KEY_LEN = 32;
 const GROUP_SIZE = 16;
 
 const SwissTable = @This();
@@ -19,7 +20,7 @@ seed: u64,
 pub const Hash = u64;
 const FingerPrint = u7;
 
-const Entry = struct { K: []u8, V: u64 };
+const Entry = struct { key_len: usize, K: [MAX_KEY_LEN]u8, V: u64 };
 const Metadata = packed struct {
     fingerprint: FingerPrint = free,
     used: u1 = 0,
@@ -74,6 +75,7 @@ pub fn init(capacity_log2: u8, allocator: std.mem.Allocator) !SwissTable {
         .control = control,
         .slots = slots,
         .size = 0,
+        .seed = std.crypto.random.int(Hash),
         .allocator = allocator,
     };
 }
@@ -103,12 +105,12 @@ fn matchEmpty(self: @This(), group_index: usize) u16 {
     return @bitCast(control_vec == empty_vec);
 }
 
-pub fn get(self: @This(), key: []const u8) ?u64 {
-    const hash = hashIt(self.seed, key);
-    const H1 = hash >> 7;
-    const H2 = Metadata.takeFingerprint(hash);
+fn lookup(self: @This(), key: []const u8, keyHash: Hash) ?usize {
+    const H1 = keyHash >> 7;
+    const H2 = Metadata.takeFingerprint(keyHash);
     //round down to start of group
-    const num_groups = (@as(usize, 1) << self.capacity_log2) / GROUP_SIZE;
+    //
+    const num_groups = (@as(usize, 1) << @as(std.math.Log2Int(usize), @intCast(self.capacity_log2))) / GROUP_SIZE;
     var group = (H1 % num_groups);
 
     while (true) {
@@ -117,8 +119,10 @@ pub fn get(self: @This(), key: []const u8) ?u64 {
         for (0..count) |_| {
             const bit = @ctz(match_mask);
             const slot_idx = group * GROUP_SIZE + bit;
-            if (SimdEql(key, self.slots[slot_idx].K)) {
-                return self.slots[slot_idx].V;
+
+            const key_len = self.slots[slot_idx].key_len;
+            if (SimdStrings.simdEql(key, self.slots[slot_idx].K[0..key_len])) {
+                return slot_idx;
             }
             match_mask &= match_mask - 1;
         }
@@ -130,6 +134,126 @@ pub fn get(self: @This(), key: []const u8) ?u64 {
         group = (group + 1) % num_groups;
     }
     return null;
+}
+
+pub fn get(self: @This(), key: []const u8) ?u64 {
+    const hash = hashIt(self.seed, key);
+    const idx = lookup(self, key, hash) orelse return null;
+    return self.slots[idx].V;
+}
+
+pub fn del(self: @This(), key: []const u8) bool {
+    const hash = hashIt(self.seed, key);
+    const idx = lookup(self, key, hash) orelse return false;
+    self.control[idx].remove();
+    return true;
+}
+
+const PutRes = union(enum) {
+    Inserted,
+    Updated,
+};
+
+pub fn put(self: *@This(), key: []const u8, value: u64) PutRes {
+    const hash = hashIt(self.seed, key);
+    if (lookup(self.*, key, hash)) |i| {
+        self.slots[i].V = value;
+        return PutRes.Updated;
+    }
+
+    const H1 = hash >> 7;
+    const H2 = Metadata.takeFingerprint(hash);
+    //round down to start of group
+    const num_groups = (@as(usize, 1) << @as(std.math.Log2Int(usize), @intCast(self.capacity_log2))) / GROUP_SIZE;
+    var group = (H1 % num_groups);
+
+    while (true) {
+        const emptyMask = self.matchEmpty(group);
+        if (emptyMask != 0) {
+            const bit = @ctz(emptyMask);
+            const slot_idx = group * GROUP_SIZE + bit;
+            self.slots[slot_idx].key_len = key.len;
+            @memcpy(self.slots[slot_idx].K[0..key.len], key);
+            self.slots[slot_idx].V = value;
+            self.control[slot_idx].fill(H2);
+            self.size += 1;
+            return PutRes.Inserted;
+        }
+
+        group = (group + 1) % num_groups;
+    }
+    //resize logic here probs
+    unreachable;
+}
+
+test "ops" {
+    const allocator = std.testing.allocator;
+    var st: SwissTable = try init(@as(u6, 4), allocator);
+    defer st.deinit();
+
+    // Insert
+    debug("--- Insert ---\n", .{});
+    const r1 = st.put("hello", 42);
+    debug("put hello 42: {any}\n", .{r1});
+    try expect(r1 == .Inserted);
+
+    const r2 = st.put("world", 99);
+    debug("put world 99: {any}\n", .{r2});
+    try expect(r2 == .Inserted);
+
+    debug("size: {d}\n", .{st.size});
+    try expect(st.size == 2);
+
+    // Lookup
+    debug("--- Lookup ---\n", .{});
+    const v1 = st.get("hello");
+    debug("get hello: {any}\n", .{v1});
+    try expect(v1.? == 42);
+
+    const v2 = st.get("world");
+    debug("get world: {any}\n", .{v2});
+    try expect(v2.? == 99);
+
+    const v3 = st.get("missing");
+    debug("get missing: {any}\n", .{v3});
+    try expect(v3 == null);
+
+    // Update
+    debug("--- Update ---\n", .{});
+    const r3 = st.put("hello", 100);
+    debug("put hello 100: {any}\n", .{r3});
+    try expect(r3 == .Updated);
+
+    const v4 = st.get("hello");
+    debug("get hello after update: {any}\n", .{v4});
+    try expect(v4.? == 100);
+
+    debug("size after update: {d}\n", .{st.size});
+    try expect(st.size == 2);
+
+    // Delete
+    debug("--- Delete ---\n", .{});
+    const d1 = st.del("hello");
+    debug("del hello: {any}\n", .{d1});
+    try expect(d1 == true);
+
+    const v5 = st.get("hello");
+    debug("get hello after del: {any}\n", .{v5});
+    try expect(v5 == null);
+
+    const d2 = st.del("nonexistent");
+    debug("del nonexistent: {any}\n", .{d2});
+    try expect(d2 == false);
+
+    // Insert after delete
+    debug("--- Reinsert ---\n", .{});
+    const r4 = st.put("hello", 55);
+    debug("put hello 55: {any}\n", .{r4});
+    try expect(r4 == .Inserted);
+
+    const v6 = st.get("hello");
+    debug("get hello after reinsert: {any}\n", .{v6});
+    try expect(v6.? == 55);
 }
 
 test "matchEmpty" {
@@ -161,7 +285,7 @@ test "MatchH2" {
         st.control[i].fill(fp);
     }
 
-    const bitmask = st.matchH2(fp);
+    const bitmask = st.matchH2(0, fp);
     // debug("{b}\n", .{bitmask});
     try expect(bitmask == 0xFFFF);
     try expect(bitmask == ~@as(u16, 0));
