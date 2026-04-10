@@ -3,22 +3,19 @@ ptr: *anyopaque,
 vtable: *const VTable,
 
 pub const VTable = struct {
-    getFn: *const fn (ptr: *anyopaque, key: []const u8) ?[]const u8,
-    setFn: *const fn (ptr: *anyopaque, key: []const u8, val: []const u8) void,
-    delFn: *const fn (ptr: *anyopaque, key: []const u8) void,
-    lsFn: *const fn (ptr: *anyopaque) void,
+    getFn: *const fn (ptr: *anyopaque, key: []const u8) ?u64,
+    putFn: *const fn (ptr: *anyopaque, key: []const u8, val: u64) error{OutOfMemory}!void,
+    delFn: *const fn (ptr: *anyopaque, key: []const u8) bool,
 };
 
-// ergonomic wrappers so handlers don't call .getFn directly
-pub fn get(self: Store, key: []const u8) ?[]const u8 {
+pub fn get(self: Store, key: []const u8) ?u64 {
     return self.vtable.getFn(self.ptr, key);
 }
-pub fn set(self: Store, key: []const u8, val: []const u8) void {
-    self.vtable.setFn(self.ptr, key, val);
+
+pub fn put(self: Store, key: []const u8, val: u64) error{OutOfMemory}!void {
+    return self.vtable.putFn(self.ptr, key, val);
 }
-pub fn del(self: Store, key: []const u8) void {
-    self.vtable.delFn(self.ptr, key);
-}
-pub fn ls(self: Store) void {
-    self.vtable.lsFn(self.ptr);
+
+pub fn del(self: Store, key: []const u8) bool {
+    return self.vtable.delFn(self.ptr, key);
 }

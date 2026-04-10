@@ -21,10 +21,6 @@ pub fn main() !void {
     try posix.listen(server, 128);
     log("Listening on port:{d}...\n", .{PORT});
 
-    // var arena: std.heap.ArenaAllocator = .init(std.heap.page_allocator);
-    // uncomment in prod
-    // defer arena.deinit();
-
     var gpa: std.heap.DebugAllocator(.{}) = .init;
     const allocator = gpa.allocator();
     defer {
@@ -32,16 +28,18 @@ pub fn main() !void {
         if (deinit_status == .leak) expect(false) catch @panic("Memory Leak");
     }
 
-    var parser = Parser.init();
+    const store = try SwissTable.init(10, allocator);
+    defer {
+        const st: *SwissTable = @ptrCast(@alignCast(store.ptr));
+        st.deinit();
+    }
 
-    //mock query
-    const query: []const u8 = "SET foo bar";
+    var parser = Parser.init();
+    const query: []const u8 = "SET foo 42";
     parser.parse(query);
 
-    const Store = Dispatcher.mockStore();
-    // dispatch
-    try Dispatcher.dispatch(parser.tokens[0..parser.token_count], Store);
-    var st: SwissTable = try SwissTable.init(@as(u6, 4), allocator);
-    debug(".{any}", .{st});
-    defer st.deinit();
+    try Dispatcher.dispatch(parser.tokens[0..parser.token_count], store);
+
+    const val = store.get("foo");
+    debug("foo = {any}\n", .{val});
 }

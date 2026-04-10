@@ -5,6 +5,7 @@ const std = @import("std");
 const debug = std.debug.print;
 const expect = std.testing.expect;
 const SimdStrings = @import("SIMDStrings.zig");
+const Store = @import("Store.zig");
 
 const MAX_KEY_LEN = 32;
 const GROUP_SIZE = 16;
@@ -64,11 +65,61 @@ const Metadata = packed struct {
     }
 };
 
-pub fn init(capacity_log2: u8, allocator: std.mem.Allocator) !SwissTable {
+const store_vtable = Store.VTable{
+    .getFn = storeGet,
+    .putFn = storePut,
+    .delFn = storeDel,
+};
+
+fn storeGet(ptr: *anyopaque, key: []const u8) ?u64 {
+    const self: *SwissTable = @ptrCast(@alignCast(ptr));
+    return self.get(key);
+}
+
+fn storePut(ptr: *anyopaque, key: []const u8, val: u64) error{OutOfMemory}!void {
+    const self: *SwissTable = @ptrCast(@alignCast(ptr));
+    _ = try self.put(key, val);
+}
+
+fn storeDel(ptr: *anyopaque, key: []const u8) bool {
+    var self: *SwissTable = @ptrCast(@alignCast(ptr));
+    return self.del(key);
+}
+
+pub fn init(capacity_log2: u8, allocator: std.mem.Allocator) !Store {
     const capacity = @as(usize, 1) << @as(std.math.Log2Int(usize), @intCast(capacity_log2));
     const control = try allocator.alloc(Metadata, capacity);
     const slots = try allocator.alloc(Entry, capacity);
-    // Zero-out control (everything is free)
+    @memset(control, Metadata{ .fingerprint = Metadata.free, .used = 0 });
+
+    const self = try allocator.create(SwissTable);
+    self.* = .{
+        .capacity_log2 = capacity_log2,
+        .control = control,
+        .slots = slots,
+        .size = 0,
+        .seed = std.crypto.random.int(Hash),
+        .allocator = allocator,
+    };
+
+    return .{
+        .ptr = self,
+        .vtable = &store_vtable,
+    };
+}
+
+pub fn deinit(self: *@This()) void {
+    const allocator = self.allocator;
+    allocator.free(self.control);
+    allocator.free(self.slots);
+    allocator.destroy(self);
+}
+
+//for testing
+fn initInternal(capacity_log2: u8, allocator: std.mem.Allocator) !SwissTable {
+    const capacity = @as(usize, 1) << @as(std.math.Log2Int(usize), @intCast(capacity_log2));
+    const control = try allocator.alloc(Metadata, capacity);
+    const slots = try allocator.alloc(Entry, capacity);
     @memset(control, Metadata{ .fingerprint = Metadata.free, .used = 0 });
     return .{
         .capacity_log2 = capacity_log2,
@@ -80,7 +131,7 @@ pub fn init(capacity_log2: u8, allocator: std.mem.Allocator) !SwissTable {
     };
 }
 
-pub fn deinit(self: *@This()) void {
+fn deinitInternal(self: *SwissTable) void {
     self.allocator.free(self.control);
     self.allocator.free(self.slots);
 }
@@ -142,23 +193,19 @@ pub fn get(self: @This(), key: []const u8) ?u64 {
     return self.slots[idx].V;
 }
 
-pub fn del(self: @This(), key: []const u8) bool {
+pub fn del(self: *@This(), key: []const u8) bool {
     const hash = hashIt(self.seed, key);
-    const idx = lookup(self, key, hash) orelse return false;
+    const idx = lookup(self.*, key, hash) orelse return false;
     self.control[idx].remove();
+    self.size -= 1;
     return true;
 }
 
-const PutRes = union(enum) {
-    Inserted,
-    Updated,
-};
-
-pub fn put(self: *@This(), key: []const u8, value: u64) PutRes {
+pub fn put(self: *@This(), key: []const u8, value: u64) error{OutOfMemory}!void {
     const hash = hashIt(self.seed, key);
     if (lookup(self.*, key, hash)) |i| {
         self.slots[i].V = value;
-        return PutRes.Updated;
+        return;
     }
 
     const H1 = hash >> 7;
@@ -177,7 +224,11 @@ pub fn put(self: *@This(), key: []const u8, value: u64) PutRes {
             self.slots[slot_idx].V = value;
             self.control[slot_idx].fill(H2);
             self.size += 1;
-            return PutRes.Inserted;
+            const capacity = @as(usize, 1) << @as(std.math.Log2Int(usize), @intCast(self.capacity_log2));
+            if (self.size >= capacity * 7 / 8) {
+                try self.resize();
+            }
+            return;
         }
 
         group = (group + 1) % num_groups;
@@ -186,25 +237,68 @@ pub fn put(self: *@This(), key: []const u8, value: u64) PutRes {
     unreachable;
 }
 
+fn resize(self: *@This()) error{OutOfMemory}!void {
+    const old_capacity = @as(usize, 1) << @as(std.math.Log2Int(usize), @intCast(self.capacity_log2));
+    const new_capacity_log2 = self.capacity_log2 + 1;
+    const new_capacity = @as(usize, 1) << @as(std.math.Log2Int(usize), @intCast(new_capacity_log2));
+    self.capacity_log2 = new_capacity_log2;
+
+    const old_control = self.control;
+    const old_slots = self.slots;
+    defer self.allocator.free(old_slots);
+    defer self.allocator.free(old_control);
+
+    self.control = try self.allocator.alloc(Metadata, new_capacity);
+    @memset(self.control, Metadata{ .fingerprint = Metadata.free, .used = 0 });
+    self.slots = try self.allocator.alloc(Entry, new_capacity);
+
+    self.size = 0;
+
+    for (0..old_capacity) |i| {
+        if (old_control[i].isUsed()) {
+            _ = try self.put(old_slots[i].K[0..old_slots[i].key_len], old_slots[i].V);
+        }
+    }
+}
+
+test "resize" {
+    const allocator = std.testing.allocator;
+    var st = try initInternal(@as(u6, 4), allocator);
+    defer st.deinitInternal();
+
+    for (0..14) |i| {
+        var buf: [8]u8 = undefined;
+        const key = std.fmt.bufPrint(&buf, "{d}", .{i}) catch unreachable;
+        try st.put(key, @intCast(i * 10));
+    }
+
+    debug("size after fills: {d}\n", .{st.size});
+    debug("capacity_log2 after fills: {d}\n", .{st.capacity_log2});
+    try expect(st.size == 14);
+    try expect(st.capacity_log2 == 5);
+
+    for (0..14) |i| {
+        var buf: [8]u8 = undefined;
+        const key = std.fmt.bufPrint(&buf, "{d}", .{i}) catch unreachable;
+        const val = st.get(key);
+        debug("get {s}: {any}\n", .{ key, val });
+        try expect(val.? == @as(u64, @intCast(i * 10)));
+    }
+}
+
 test "ops" {
     const allocator = std.testing.allocator;
-    var st: SwissTable = try init(@as(u6, 4), allocator);
-    defer st.deinit();
+    var st = try initInternal(@as(u6, 4), allocator);
+    defer st.deinitInternal();
 
-    // Insert
     debug("--- Insert ---\n", .{});
-    const r1 = st.put("hello", 42);
-    debug("put hello 42: {any}\n", .{r1});
-    try expect(r1 == .Inserted);
+    try st.put("hello", 42);
 
-    const r2 = st.put("world", 99);
-    debug("put world 99: {any}\n", .{r2});
-    try expect(r2 == .Inserted);
+    try st.put("world", 99);
 
     debug("size: {d}\n", .{st.size});
     try expect(st.size == 2);
 
-    // Lookup
     debug("--- Lookup ---\n", .{});
     const v1 = st.get("hello");
     debug("get hello: {any}\n", .{v1});
@@ -213,16 +307,12 @@ test "ops" {
     const v2 = st.get("world");
     debug("get world: {any}\n", .{v2});
     try expect(v2.? == 99);
-
     const v3 = st.get("missing");
     debug("get missing: {any}\n", .{v3});
     try expect(v3 == null);
 
-    // Update
     debug("--- Update ---\n", .{});
-    const r3 = st.put("hello", 100);
-    debug("put hello 100: {any}\n", .{r3});
-    try expect(r3 == .Updated);
+    try st.put("hello", 100);
 
     const v4 = st.get("hello");
     debug("get hello after update: {any}\n", .{v4});
@@ -231,7 +321,6 @@ test "ops" {
     debug("size after update: {d}\n", .{st.size});
     try expect(st.size == 2);
 
-    // Delete
     debug("--- Delete ---\n", .{});
     const d1 = st.del("hello");
     debug("del hello: {any}\n", .{d1});
@@ -245,11 +334,8 @@ test "ops" {
     debug("del nonexistent: {any}\n", .{d2});
     try expect(d2 == false);
 
-    // Insert after delete
     debug("--- Reinsert ---\n", .{});
-    const r4 = st.put("hello", 55);
-    debug("put hello 55: {any}\n", .{r4});
-    try expect(r4 == .Inserted);
+    try st.put("hello", 55);
 
     const v6 = st.get("hello");
     debug("get hello after reinsert: {any}\n", .{v6});
@@ -258,8 +344,8 @@ test "ops" {
 
 test "matchEmpty" {
     const allocator = std.testing.allocator;
-    var st: SwissTable = try init(@as(u6, 4), allocator);
-    defer st.deinit();
+    var st = try initInternal(@as(u6, 4), allocator);
+    defer st.deinitInternal();
 
     for (0..16) |i| {
         st.control[i].fill(42);
@@ -276,9 +362,8 @@ test "matchEmpty" {
 
 test "MatchH2" {
     const allocator = std.testing.allocator;
-    var st: SwissTable = try init(@as(u6, 4), allocator);
+    var st = try initInternal(@as(u6, 4), allocator);
     const seed = std.crypto.random.int(Hash);
-    //https://en.wikipedia.org/wiki/Avalanche_effect
     const hash = hashIt(seed, @as([]const u8, "dsasd"));
     const fp = Metadata.takeFingerprint(hash);
     for (0..GROUP_SIZE) |i| {
@@ -286,21 +371,15 @@ test "MatchH2" {
     }
 
     const bitmask = st.matchH2(0, fp);
-    // debug("{b}\n", .{bitmask});
     try expect(bitmask == 0xFFFF);
     try expect(bitmask == ~@as(u16, 0));
-    defer st.deinit();
+    defer st.deinitInternal();
 }
 
 test "swisstable create and destroy / avalanche effect" {
     const allocator = std.testing.allocator;
-    var st: SwissTable = try init(@as(u6, 4), allocator);
+    var st = try initInternal(@as(u6, 4), allocator);
     const seed = std.crypto.random.int(Hash);
-    //https://en.wikipedia.org/wiki/Avalanche_effect
     try expect(hashIt(seed, "Hello") == hashIt(seed, "Hello"));
-    // Avalanche effect confirmed, so comment this out
-    // debug("{d}\n", .{hashIt(seed, "Hello")});
-    // debug("{d}\n", .{hashIt(seed, "Hellq")});
-    // debug("{d}\n", .{hashIt(seed, "hello")});
-    defer st.deinit();
+    defer st.deinitInternal();
 }
