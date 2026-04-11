@@ -1,7 +1,7 @@
 .{
     .name = .kvz,
     .version = "0.0.1",
-    .minimum_zig_version = "0.15.2",
+    .minimum_zig_version = "0.16.0-dev.3144+ac6fb0b59",
     .paths = .{""},
     .fingerprint = 0x7276bb816f5fd32f,
 }
