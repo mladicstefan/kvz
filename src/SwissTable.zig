@@ -86,7 +86,13 @@ fn storeDel(ptr: *anyopaque, key: []const u8) bool {
     return self.del(key);
 }
 
-pub fn init(capacity_log2: u8, allocator: std.mem.Allocator) !Store {
+fn randomSeed(io: std.Io) !Hash {
+    var buf: [@sizeOf(Hash)]u8 = undefined;
+    try io.randomSecure(&buf);
+    return @bitCast(buf);
+}
+
+pub fn init(capacity_log2: u8, allocator: std.mem.Allocator, io: std.Io) !Store {
     const capacity = @as(usize, 1) << @as(std.math.Log2Int(usize), @intCast(capacity_log2));
     const control = try allocator.alloc(Metadata, capacity);
     const slots = try allocator.alloc(Entry, capacity);
@@ -98,7 +104,7 @@ pub fn init(capacity_log2: u8, allocator: std.mem.Allocator) !Store {
         .control = control,
         .slots = slots,
         .size = 0,
-        .seed = std.crypto.random.int(Hash),
+        .seed = try randomSeed(io),
         .allocator = allocator,
     };
 
@@ -116,7 +122,7 @@ pub fn deinit(self: *@This()) void {
 }
 
 //for testing
-fn initInternal(capacity_log2: u8, allocator: std.mem.Allocator) !SwissTable {
+fn initInternal(capacity_log2: u8, allocator: std.mem.Allocator, io: std.Io) !SwissTable {
     const capacity = @as(usize, 1) << @as(std.math.Log2Int(usize), @intCast(capacity_log2));
     const control = try allocator.alloc(Metadata, capacity);
     const slots = try allocator.alloc(Entry, capacity);
@@ -126,7 +132,7 @@ fn initInternal(capacity_log2: u8, allocator: std.mem.Allocator) !SwissTable {
         .control = control,
         .slots = slots,
         .size = 0,
-        .seed = std.crypto.random.int(Hash),
+        .seed = try randomSeed(io),
         .allocator = allocator,
     };
 }
@@ -263,7 +269,8 @@ fn resize(self: *@This()) error{OutOfMemory}!void {
 
 test "resize" {
     const allocator = std.testing.allocator;
-    var st = try initInternal(@as(u6, 4), allocator);
+    const io = std.testing.io;
+    var st = try initInternal(@as(u6, 4), allocator, io);
     defer st.deinitInternal();
 
     for (0..14) |i| {
@@ -288,7 +295,9 @@ test "resize" {
 
 test "ops" {
     const allocator = std.testing.allocator;
-    var st = try initInternal(@as(u6, 4), allocator);
+
+    const io = std.testing.io;
+    var st = try initInternal(@as(u6, 4), allocator, io);
     defer st.deinitInternal();
 
     debug("--- Insert ---\n", .{});
@@ -344,7 +353,9 @@ test "ops" {
 
 test "matchEmpty" {
     const allocator = std.testing.allocator;
-    var st = try initInternal(@as(u6, 4), allocator);
+
+    const io = std.testing.io;
+    var st = try initInternal(@as(u6, 4), allocator, io);
     defer st.deinitInternal();
 
     for (0..16) |i| {
@@ -362,8 +373,10 @@ test "matchEmpty" {
 
 test "MatchH2" {
     const allocator = std.testing.allocator;
-    var st = try initInternal(@as(u6, 4), allocator);
-    const seed = std.crypto.random.int(Hash);
+
+    const io = std.testing.io;
+    var st = try initInternal(@as(u6, 4), allocator, io);
+    const seed = try randomSeed(io);
     const hash = hashIt(seed, @as([]const u8, "dsasd"));
     const fp = Metadata.takeFingerprint(hash);
     for (0..GROUP_SIZE) |i| {
@@ -378,8 +391,11 @@ test "MatchH2" {
 
 test "swisstable create and destroy / avalanche effect" {
     const allocator = std.testing.allocator;
-    var st = try initInternal(@as(u6, 4), allocator);
-    const seed = std.crypto.random.int(Hash);
+
+    const io = std.testing.io;
+    var st = try initInternal(@as(u6, 4), allocator, io);
+
+    const seed = try randomSeed(io);
     try expect(hashIt(seed, "Hello") == hashIt(seed, "Hello"));
     defer st.deinitInternal();
 }
