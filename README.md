@@ -1,5 +1,5 @@
 ## Toy KV store server
-Zig v0.15.2
+Zig nightly
 
 ### V1 metrics
 Single threaded - no event-loop, no IO_URING, inefficient branching,no SIMD, inefficient tokenizations:
