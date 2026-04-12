@@ -17,55 +17,6 @@ on Intel Ultra 7, hybrid E/P cores
 ~ roughly 15-20% of redis performance
 
 ### V2
-Work in progress ;)
-
-### Swisstable benchmark:
-
-==================================================
-=== SwissTable ===
-
-==================================================
-
---- PUT ---
-Total:   103 ms
-Per op:  103 ns
-Size:    1000000
-Cap log2: 21
-
---- GET (hit) ---
-Total:   66 ms
-Per op:  66 ns
-
---- GET (miss) ---
-Total:   10 ms
-Per op:  10 ns
-
---- DEL ---
-Total:   62 ms
-Per op:  62 ns
-Size:    0
-
-==================================================
-=== std.HashMap ===
-
-==================================================
-
---- PUT ---
-Total:   129 ms
-Per op:  129 ns
-Size:    1000000
-
---- GET (hit) ---
-Total:   67 ms
-Per op:  67 ns
-
---- GET (miss) ---
-Total:   13 ms
-Per op:  13 ns
-
---- DEL ---
-Total:   56 ms
-Per op:  56 ns
-Size:    0
-
-==================================================
+1000000 inserts in 2.04s (489721 ops/sec)
+Now acording to my very shady benchmark, (same as benchmark for v1) I am approximately 3x faster than redis. Of course my implementation is only a subset of the functionality of Redis and doesn't support persistence, regardless this was a fun project. It can and will be even faster when Zig 0.16 ```std.Io.Uring``` drops the support for sockets, which is currently, not implemented.
+Disclaimer: V2 isn't thread safe, probably isn't memory safe, and works only on a small subset of actual redis functionality, the core HASHMAP & Parser is faster (Due to being cache-friendly and using SIMD), although the socket approach is probably much slower.
