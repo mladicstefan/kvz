@@ -3,10 +3,12 @@ const debug = std.debug.print;
 const posix = std.posix;
 const log = std.log.debug;
 const expect = std.testing.expect;
+const assert = std.debug.assert;
 
 const Dispatcher = @import("Dispatcher.zig");
 const Parser = @import("Parser.zig");
 const SwissTable = @import("SwissTable.zig");
+const Store = @import("Store.zig");
 const builtin = @import("builtin");
 
 comptime {
@@ -16,41 +18,69 @@ comptime {
     }
 }
 
-pub fn main() !void {
+const ClientCtx = struct {
+    io: std.Io,
+    stream: std.Io.net.Stream,
+    store: Store, // or whatever type SwissTable.init returns
+};
+
+pub fn main(init: std.process.Init.Minimal) !void {
+    var debug_allocator: std.heap.DebugAllocator(.{}) = .init;
+    defer assert(debug_allocator.deinit() == .ok);
+    const gpa = debug_allocator.allocator();
+
+    var threaded: std.Io.Threaded = .init(gpa, .{
+        .argv0 = .init(init.args),
+        .environ = init.environ,
+    });
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    return serverMain(gpa, io);
+}
+
+fn handleClient(io: std.Io, stream: std.Io.net.Stream, store: *Store) !void {
+    var s = stream;
+    defer s.close(io);
+    var read_buffer: [4096]u8 = undefined;
+    var stream_reader = s.reader(io, &read_buffer);
+    const rdr = &stream_reader.interface;
+    var parser = Parser.init();
+    while (true) {
+        var out_buf: [1024]u8 = undefined;
+        var out: std.Io.Writer = .fixed(&out_buf);
+        _ = rdr.streamDelimiter(&out, '\n') catch break;
+        _ = rdr.toss(1);
+        const query = out.buffered();
+        if (query.len == 0) continue;
+        parser.parse(query);
+        Dispatcher.dispatch(parser.tokens[0..parser.token_count], store.*) catch |err| {
+            std.debug.print("dispatch err: {}\n", .{err});
+            continue;
+        };
+    }
+}
+
+pub fn serverMain(gpa: std.mem.Allocator, io: std.Io) !void {
     const PORT = 25556;
-    // const address = net.Address.initIp4(.{ 127, 0, 0, 1 }, PORT);
-
-    // const server = try posix.socket(posix.AF.INET, posix.SOCK.STREAM, 0);
-    // defer posix.close(server);
-
-    // try posix.setsockopt(server, posix.SOL.SOCKET, posix.SO.REUSEADDR, &std.mem.toBytes(@as(c_int, 1)));
-    // try posix.bind(server, &address.any, address.getOsSockLen());
-    // try posix.listen(server, 128);
+    const address = try std.Io.net.IpAddress.parseIp4("127.0.0.1", PORT);
+    var server = try std.Io.net.IpAddress.listen(&address, io, .{ .reuse_address = true });
     log("Listening on port:{d}...\n", .{PORT});
 
-    var gpa: std.heap.DebugAllocator(.{}) = .init;
-    const allocator = gpa.allocator();
-    defer {
-        const deinit_status = gpa.deinit();
-        if (deinit_status == .leak) expect(false) catch @panic("Memory Leak");
-    }
-
-    var io_threaded = std.Io.Threaded.init(allocator, .{});
-    defer io_threaded.deinit();
-    const io = io_threaded.io();
-
-    const store = try SwissTable.init(10, allocator, io);
+    var store = try SwissTable.init(10, gpa, io);
     defer {
         const st: *SwissTable = @ptrCast(@alignCast(store.ptr));
         st.deinit();
     }
 
-    var parser = Parser.init();
-    const query: []const u8 = "SET foo 42";
-    parser.parse(query);
+    while (true) {
+        const stream = try server.accept(io);
 
-    try Dispatcher.dispatch(parser.tokens[0..parser.token_count], store);
+        var future = io.async(handleClient, .{ io, stream, &store });
+        defer future.cancel(io) catch unreachable;
 
-    const val = store.get("foo");
-    debug("foo = {any}\n", .{val});
+        future.await(io) catch |err| {
+            std.debug.print("client err: {}\n", .{err});
+        };
+    }
 }
