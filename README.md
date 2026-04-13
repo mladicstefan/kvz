@@ -1,24 +1,42 @@
-## Toy KV store server
-Zig nightly
+# Toy KV Store Server
 
-### V1 metrics
-Single threaded - no event-loop, no IO_URING, inefficient branching,no SIMD, inefficient tokenizations:
+A toy key-value store server written in **Zig nightly**, built as a learning project to teach myself SIMD and low-level performance optimization.
+
+> **⚠️ Important caveat:** Network latency — the primary bottleneck for real-world databases — is not simulated in these benchmarks. This is a fun toy project, not a production system, and I've probably made many mistakes along the way. Take all comparisons with a grain of salt.
+
+---
+
+## V1 — Naive Implementation
+
+Single-threaded with no event loop, no `io_uring`, inefficient branching, no SIMD, and inefficient tokenization.
 
 ```bash
 zig build run
 nc localhost 25556
 ```
-## Single threader benchmarks: 
-- 1000000 inserts in 39.97s (25019 ops/sec)
-on Ryzen 7 3700x
-- 1000000 inserts in 31.09s (32170 ops/sec) 
-on Intel Ultra 7, hybrid E/P cores
-####
-~ roughly 15-20% of redis performance
 
-### V2
+### Benchmarks
+
+| Machine | Result | Throughput |
+|---|---|---|
+| Ryzen 7 3700X | 1,000,000 inserts in 39.97s | ~25,019 ops/sec |
+| Intel Ultra 7 (hybrid E/P cores) | 1,000,000 inserts in 31.09s | ~32,170 ops/sec |
+
+Roughly **15–20%** of Redis performance.
+
+---
+
+## V2 — SIMD & Cache-Friendly Redesign
+
 ```
-1000000 inserts in 2.04s (489721 ops/sec)
+1,000,000 inserts in 2.04s (489,721 ops/sec)
 ```
-Now acording to my very shady benchmark, (same as benchmark for v1) I am approximately 3x faster than redis. Of course my implementation is only a subset of the functionality of Redis and doesn't support persistence, regardless this was a fun project. It can and will be even faster when Zig 0.16 ```std.Io.Uring``` drops the support for sockets, which is currently, not implemented.
-Disclaimer: V2 isn't thread safe, probably isn't memory safe, and works only on a small subset of actual redis functionality, the core HASHMAP & Parser is faster (Due to being cache-friendly and using SIMD), although the socket approach is probably much slower.
+
+According to my (very unscientific) benchmark, V2 is approximately **3× faster than Redis**. The core hashmap and parser are faster thanks to being cache-friendly and using SIMD. Performance should improve further once Zig 0.16 lands `std.Io.Uring` socket support, which is currently not implemented.
+
+### Disclaimers
+
+- V2 **is not thread-safe** and probably isn't memory safe
+- Only supports a small subset of actual Redis functionality (no persistence, etc.)
+- The socket approach is likely much slower than Redis in real-world conditions
+- Benchmark methodology is identical to V1 — take the Redis comparison lightly
